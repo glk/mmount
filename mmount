@@ -1,0 +1,285 @@
+#!/usr/bin/env python
+
+# Copyright (c) 2011 Gleb Kurtsou
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+
+
+import os
+import sys
+import re
+import subprocess
+import optparse
+
+from xml.etree import ElementTree as ET
+from fnmatch import fnmatch
+
+version = '0.1'
+
+class Config(object):
+
+    verbose = False
+
+    skip = ['ada*']
+
+    fs_options = {
+        'msdosfs': ['-L=ru_RU.UTF-8', '-D=cp866'],
+    }
+
+    fstype_map = {
+        'fat32': 'msdosfs',
+        'ntfs': 'ntfs',
+    }
+
+    sudo = 'sudo'
+    mount = '/sbin/mount'
+    umount = '/sbin/umount'
+    sysctl = '/sbin/sysctl'
+    mkdir = '/bin/mkdir'
+    rmdir = '/bin/rmdir'
+    media_root = '/media'
+
+def warn(msg, *args):
+    if args:
+        msg = msg % tuple(args)
+    print >> sys.stderr, msg
+
+def warn_verbose(msg, *args):
+    if Config.verbose:
+        warn(msg, *args)
+
+def execute(cmd, sudo=False, pipe=False):
+    if pipe:
+        stdout = subprocess.PIPE
+    else:
+        stdout = None
+    if sudo:
+        cmd.insert(0, Config.sudo)
+    p = subprocess.Popen(cmd, stdout=stdout)
+    if pipe:
+        return p.stdout
+    p.wait()
+    if p.returncode != 0:
+        warn('Execution failed: %s', " ".join(cmd))
+        sys.exit(1)
+
+class Mount(object):
+    def __init__(self, fstype, devs):
+        self.fstype = fstype
+        self.opts = Config.fs_options.get(fstype, [])
+        self.devs = devs
+        self.mountpoint = None
+
+    def __repr__(self):
+        opts = ", ".join([self.fstype] + self.devs[1:])
+        dev = self.devpath(self.devs[0])
+        if not self.mountpoint:
+            return "%s\tnot mounted\t(%s)" % (dev, opts)
+        return "%s\ton %s\t(%s)" % (dev, self.mountpoint, opts)
+
+    @staticmethod
+    def devpath(dev):
+        return os.path.join('/dev', dev)
+
+    @staticmethod
+    def devname(dev):
+        if dev.startswith('/dev/'):
+            return dev[5:]
+        return dev
+
+    def is_mounted(self):
+        return self.mountpoint != None
+
+    def mount(self):
+        if self.mountpoint != None:
+            warn("Filesystem at %s (%s) is already mounted on %s",
+                    self.devs[0], self.fstype, self.mountpoint)
+            sys.exit(1)
+        dev = self.devs[0]
+        mountpoint = os.path.join(Config.media_root, os.path.basename(dev))
+        if not os.path.isdir(mountpoint):
+            execute([Config.mkdir, mountpoint], sudo=True)
+        cmd = [Config.mount, '-t', self.fstype]
+        if self.opts:
+            opts = ",".join(self.opts)
+            cmd.extend(['-o', opts])
+        cmd.extend([self.devpath(dev), mountpoint])
+        print repr(self)
+        execute(cmd, sudo=True)
+        self.mountpoint = mountpoint
+
+    def unmount(self):
+        if self.mountpoint == None:
+            warn("Filesystem at %s (%s) is not mounted",
+                    dev, self.fstype)
+            sys.exit(1)
+        print repr(self)
+        execute([Config.umount, self.mountpoint], sudo=True)
+        if self.mountpoint.startswith(Config.media_root):
+            execute([Config.rmdir, self.mountpoint], sudo=True)
+
+
+class MMount(object):
+    def __init__(self):
+        self.mtab = {}
+        self.mounts = []
+        self._init_geom()
+        self._init_mounted()
+
+    def _add_mount(self, mount):
+        for skip in Config.skip:
+            for dev in mount.devs:
+                if fnmatch(dev, skip):
+                    warn_verbose("Skip device %s", dev);
+                    return
+        warn_verbose("Add %s", mount)
+        self.mounts.append(mount)
+        for d in mount.devs:
+            assert not self.mtab.has_key(d)
+            self.mtab[d] = mount
+
+    def _init_mounted(self):
+        fd = execute(Config.mount, pipe=True)
+        re_mtab = re.compile('(?P<dev>\S+)\s+on\s+(?P<mountpoint>\S+)\s+\((?P<fstype>\w+)')
+        while True:
+            line = fd.readline()
+            if (not line):
+                break
+            match = re_mtab.match(line)
+            if not match:
+                warn_verbose("Can't parse mount output: %s", line)
+            (dev, mountpoint, fstype) = tuple(map(lambda x: match.group(x),
+                ['dev', 'mountpoint', 'fstype']))
+            dev = Mount.devname(dev)
+            mount = self.mtab.get(dev)
+            if mount == None:
+                warn_verbose("Skip mount: %s on %s (%s)",
+                        dev, mountpoint, fstype)
+                continue
+            assert mount.fstype == fstype
+            mount.mountpoint = mountpoint
+
+        fd.close()
+
+    def _init_geom(self):
+        fd = execute([Config.sysctl, '-n', 'kern.geom.confxml'], pipe=True)
+        geomconf = ET.parse(fd)
+        fd.close()
+        parent_map = dict([(c,p) for p in geomconf.getiterator() for c in p])
+        dev_map = {}
+        prov_alias = {}
+        for cls in geomconf.findall('./class'):
+            clsname = cls.find('name').text
+            if clsname == 'DEV':
+                for geom in cls.findall('./geom'):
+                    provref = geom.find('./consumer/provider').get('ref')
+                    devname = geom.find('./name').text
+                    warn_verbose("Add device %s -> %s", provref, devname)
+                    assert dev_map.get(provref) == None
+                    dev_map[provref] = devname
+            elif clsname == 'LABEL':
+                for geom in cls.findall('./geom'):
+                    realprovref = geom.find('./consumer/provider').get('ref')
+                    provref = geom.find('./provider').get('id')
+                    warn_verbose("Add provider alias %s -> %s",
+                            provref, realprovref)
+                    al = prov_alias.get(realprovref)
+                    if not prov_alias.has_key(realprovref):
+                        prov_alias[realprovref] = []
+                    prov_alias[realprovref].append(provref)
+                pass
+        for provider in geomconf.findall('.//geom/provider'):
+            fstype = provider.find('./config/type')
+            if fstype == None:
+                warn_verbose("Skip provider %s", provider.find('./name').text)
+                continue
+            fstype = fstype.text
+            provref = provider.get('id')
+            provname = provider.find('./name').text
+            fs = Config.fstype_map.get(fstype)
+            if not fs:
+                warn_verbose("Unknown fs type %s, skip provider %s",
+                        fstype, provname)
+                continue
+            devs = [dev_map[provref]]
+            for alias in prov_alias.get(provref, []):
+                warn_verbose("Add device alias %s", dev_map[alias])
+                devs.append(dev_map[alias])
+            self._add_mount(Mount(fs, devs))
+
+if __name__ == '__main__':
+    def get_mounts():
+        if opts.all:
+            return app.mounts
+        mm = []
+        for oarg in args:
+            arg = Mount.devname(dev)
+            m = app.mtab.get(arg)
+            if not m:
+                warn("Invalid device: %s", oarg)
+                sys.exit(1)
+            mm.append(m)
+        return mm
+
+    def action_mount():
+        for m in get_mounts():
+            if not m.is_mounted():
+                m.mount()
+
+    def action_unmount():
+        for m in get_mounts():
+            if m.is_mounted():
+                m.unmount()
+
+    def action_list():
+        for m in app.mounts:
+            print repr(m)
+
+    parser = optparse.OptionParser(usage="usage: %prog [options] device",
+            version="%prog " + version)
+    parser.add_option("-v", action="store_true", dest="verbose")
+    parser.add_option('--mount', action='store_true')
+    parser.add_option('--unmount', action='store_true')
+    parser.add_option('--list', action='store_true')
+    parser.add_option('--all', action='store_true')
+    (opts, args) = parser.parse_args()
+
+    if not args and not opts.all:
+        action = action_list
+    else:
+        action = action_mount
+
+    if os.path.basename(sys.argv[0]) == 'munmount':
+        action = action_unmount
+
+    Config.verbose =  opts.verbose
+
+    if opts.mount:
+        action = action_mount
+    elif opts.unmount:
+        action = action_unmount
+    elif opts.list:
+        action = action_list
+
+    app = MMount()
+    action()
