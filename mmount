@@ -75,6 +75,7 @@ def execute(cmd, sudo=False, pipe=False):
         stdout = None
     if sudo:
         cmd.insert(0, Config.sudo)
+    warn_verbose("Execute: %s", " ".join(cmd));
     p = subprocess.Popen(cmd, stdout=stdout)
     if pipe:
         return p.stdout
@@ -159,7 +160,7 @@ class MMount(object):
             self.mtab[d] = mount
 
     def _init_mounted(self):
-        fd = execute(Config.mount, pipe=True)
+        fd = execute([Config.mount], pipe=True)
         re_mtab = re.compile('(?P<dev>\S+)\s+on\s+(?P<mountpoint>\S+)\s+\((?P<fstype>\w+)')
         while True:
             line = fd.readline()
@@ -233,7 +234,7 @@ if __name__ == '__main__':
             return app.mounts
         mm = []
         for oarg in args:
-            arg = Mount.devname(dev)
+            arg = Mount.devname(oarg)
             m = app.mtab.get(arg)
             if not m:
                 warn("Invalid device: %s", oarg)
