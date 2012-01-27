@@ -42,8 +42,21 @@ class Config(object):
 
     skip = ['ada*']
 
+    uid = str(os.getuid())
+
+    gid = str(os.getgid())
+
     fs_options = {
-        'msdosfs': ['-L=ru_RU.UTF-8', '-D=cp866'],
+        'msdosfs': [
+            '-L=ru_RU.UTF-8', '-D=cp866',
+            '-m=664', '-M=775',
+            '-u=' + uid, '-g=' + gid,
+            ],
+        'ntfs': [
+            '-C=utf-8',
+            '-m=775',
+            '-u=' + uid, '-g=' + gid,
+            ],
     }
 
     fstype_map = {
