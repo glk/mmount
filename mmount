@@ -65,6 +65,7 @@ class Config(object):
     }
 
     sudo = 'sudo'
+    filemanager = 'thunar'
     mount = '/sbin/mount'
     umount = '/sbin/umount'
     sysctl = '/sbin/sysctl'
@@ -81,7 +82,7 @@ def warn_verbose(msg, *args):
     if Config.verbose:
         warn(msg, *args)
 
-def execute(cmd, sudo=False, pipe=False):
+def execute(cmd, sudo=False, pipe=False, wait=True):
     if pipe:
         stdout = subprocess.PIPE
     else:
@@ -92,24 +93,34 @@ def execute(cmd, sudo=False, pipe=False):
     p = subprocess.Popen(cmd, stdout=stdout)
     if pipe:
         return p.stdout
-    p.wait()
-    if p.returncode != 0:
-        warn('Execution failed: %s', " ".join(cmd))
-        sys.exit(1)
+    if wait:
+        p.wait()
+        if p.returncode != 0:
+            warn('Execution failed: %s', " ".join(cmd))
+            sys.exit(1)
 
 class Mount(object):
-    def __init__(self, fstype, devs):
+    def __init__(self, fstype, devs, fssize):
         self.fstype = fstype
+        self.fssize = fssize
         self.opts = Config.fs_options.get(fstype, [])
         self.devs = devs
         self.mountpoint = None
 
     def __repr__(self):
-        opts = ", ".join([self.fstype] + self.devs[1:])
-        dev = self.devpath(self.devs[0])
+        info = self.info()
         if not self.mountpoint:
-            return "%s\tnot mounted\t(%s)" % (dev, opts)
-        return "%s\ton %s\t(%s)" % (dev, self.mountpoint, opts)
+            return "%s\tnot mounted\t(%s)" % (self.info_dev(), info)
+        return "%s\ton %s\t(%s)" % (self.info_dev(), self.mountpoint, info)
+
+    def info(self):
+        fssize = []
+        if self.fssize > 0:
+            fssize = [Mount.humanize_bytes(self.fssize)]
+        return ", ".join(fssize + [self.fstype] + self.devs[1:])
+
+    def info_dev(self):
+        return Mount.devpath(self.devs[0])
 
     @staticmethod
     def devpath(dev):
@@ -120,6 +131,21 @@ class Mount(object):
         if dev.startswith('/dev/'):
             return dev[5:]
         return dev
+
+    @staticmethod
+    def humanize_bytes(bytes, precision=1):
+        if bytes <= 0:
+            return str(bytes)
+        abbrevs = (
+            (1<<30L, 'G'),
+            (1<<20L, 'M'),
+            (1<<10L, 'K'),
+            (1, '')
+        )
+        for factor, suffix in abbrevs:
+            if bytes >= factor:
+                break
+        return '%.*f%s' % (precision, bytes / factor, suffix)
 
     def is_mounted(self):
         return self.mountpoint != None
@@ -192,7 +218,6 @@ class MMount(object):
                 continue
             assert mount.fstype == fstype
             mount.mountpoint = mountpoint
-
         fd.close()
 
     def _init_geom(self):
@@ -228,6 +253,12 @@ class MMount(object):
                 warn_verbose("Skip provider %s", provider.find('./name').text)
                 continue
             fstype = fstype.text
+            fssize = provider.find('./config/length')
+            if fstype == None:
+                warn_verbose("Provider has no size %s", provider.find('./name').text)
+                fssize = 0
+            else:
+                fssize = long(fssize.text)
             provref = provider.get('id')
             provname = provider.find('./name').text
             fs = Config.fstype_map.get(fstype)
@@ -239,7 +270,7 @@ class MMount(object):
             for alias in prov_alias.get(provref, []):
                 warn_verbose("Add device alias %s", dev_map[alias])
                 devs.append(dev_map[alias])
-            self._add_mount(Mount(fs, devs))
+            self._add_mount(Mount(fs, devs, fssize))
 
 if __name__ == '__main__':
     def get_mounts(getall):
@@ -259,6 +290,8 @@ if __name__ == '__main__':
         for m in get_mounts(opts.all):
             if not m.is_mounted():
                 m.mount()
+                if opts.browse:
+                    execute([Config.filemanager, m.mountpoint], wait=False)
 
     def action_unmount():
         for m in get_mounts(opts.all):
@@ -269,12 +302,36 @@ if __name__ == '__main__':
         for m in get_mounts(not args):
             print repr(m)
 
+    def action_list_ob():
+        print '<openbox_pipe_menu>'
+        try:
+            mm = get_mounts(not args)
+            if not mm:
+                print '<item label="No devices"/>'
+            for m in mm:
+                if m.is_mounted():
+                    cmd = '--unmount'
+                    label = 'Unmount'
+                else:
+                    cmd = '--mount --browse'
+                    label = 'Mount'
+                dev = m.info_dev()
+                print '<item label="%s %s (%s)"><action name="Execute">\n' % \
+                        (label, dev, m.info()), \
+                    '<command>%s</command>\n' % (" ".join([sys.argv[0], cmd, dev])), \
+                    '</action></item>'
+        except:
+            print '<item label="Unexpected error"/>'
+        print '</openbox_pipe_menu>'
+
     parser = optparse.OptionParser(usage="usage: %prog [options] device",
             version="%prog " + version)
     parser.add_option("-v", action="store_true", dest="verbose")
     parser.add_option('--mount', action='store_true')
     parser.add_option('--unmount', action='store_true')
     parser.add_option('--list', action='store_true')
+    parser.add_option('--list-ob', action='store_true')
+    parser.add_option('--browse', action='store_true')
     parser.add_option('--all', action='store_true')
     (opts, args) = parser.parse_args()
 
@@ -294,6 +351,8 @@ if __name__ == '__main__':
         action = action_unmount
     elif opts.list:
         action = action_list
+    elif opts.list_ob:
+        action = action_list_ob
 
     app = MMount()
     action()
