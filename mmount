@@ -64,13 +64,14 @@ class Config(object):
         'ntfs': 'ntfs',
     }
 
-    sudo = 'sudo'
-    filemanager = 'thunar'
-    mount = '/sbin/mount'
-    umount = '/sbin/umount'
-    sysctl = '/sbin/sysctl'
-    mkdir = '/bin/mkdir'
-    rmdir = '/bin/rmdir'
+    filemanager = [ 'thunar' ]
+
+    sudo = [ 'sudo' ]
+    mount = [ '/sbin/mount' ]
+    umount = [ '/sbin/umount' ]
+    sysctl = [ '/sbin/sysctl' ]
+    mkdir = [ '/bin/mkdir' ]
+    rmdir = [ '/bin/rmdir' ]
     media_root = '/media'
 
 def warn(msg, *args):
@@ -88,7 +89,7 @@ def execute(cmd, sudo=False, pipe=False, wait=True):
     else:
         stdout = None
     if sudo:
-        cmd.insert(0, Config.sudo)
+        cmd = Config.sudo + cmd
     warn_verbose("Execute: %s", " ".join(cmd));
     p = subprocess.Popen(cmd, stdout=stdout)
     if pipe:
@@ -158,8 +159,8 @@ class Mount(object):
         dev = self.devs[0]
         mountpoint = os.path.join(Config.media_root, os.path.basename(dev))
         if not os.path.isdir(mountpoint):
-            execute([Config.mkdir, mountpoint], sudo=True)
-        cmd = [Config.mount, '-t', self.fstype]
+            execute(Config.mkdir + [mountpoint], sudo=True)
+        cmd = Config.mount + ['-t', self.fstype]
         if self.opts:
             opts = ",".join(self.opts)
             cmd.extend(['-o', opts])
@@ -174,9 +175,9 @@ class Mount(object):
                     dev, self.fstype)
             sys.exit(1)
         print repr(self)
-        execute([Config.umount, self.mountpoint], sudo=True)
+        execute(Config.umount + [self.mountpoint], sudo=True)
         if self.mountpoint.startswith(Config.media_root):
-            execute([Config.rmdir, self.mountpoint], sudo=True)
+            execute(Config.rmdir + [self.mountpoint], sudo=True)
 
 
 class MMount(object):
@@ -199,7 +200,7 @@ class MMount(object):
             self.mtab[d] = mount
 
     def _init_mounted(self):
-        fd = execute([Config.mount], pipe=True)
+        fd = execute(Config.mount, pipe=True)
         re_mtab = re.compile('(?P<dev>\S+)\s+on\s+(?P<mountpoint>\S+)\s+\((?P<fstype>\w+)')
         while True:
             line = fd.readline()
@@ -221,7 +222,7 @@ class MMount(object):
         fd.close()
 
     def _init_geom(self):
-        fd = execute([Config.sysctl, '-n', 'kern.geom.confxml'], pipe=True)
+        fd = execute(Config.sysctl + ['-n', 'kern.geom.confxml'], pipe=True)
         geomconf = ET.parse(fd)
         fd.close()
         parent_map = dict([(c,p) for p in geomconf.getiterator() for c in p])
@@ -291,7 +292,7 @@ if __name__ == '__main__':
             if not m.is_mounted():
                 m.mount()
                 if opts.browse:
-                    execute([Config.filemanager, m.mountpoint], wait=False)
+                    execute(Config.filemanager + [m.mountpoint], wait=False)
 
     def action_unmount():
         for m in get_mounts(opts.all):
