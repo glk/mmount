@@ -65,6 +65,7 @@ class Config(object):
     }
 
     filemanager = [ 'thunar' ]
+    notify = [ 'notify-send', '-t', '1800' ]
 
     sudo = [ 'sudo' ]
     mount = [ '/sbin/mount' ]
@@ -82,6 +83,14 @@ def warn(msg, *args):
 def warn_verbose(msg, *args):
     if Config.verbose:
         warn(msg, *args)
+
+def notify(msg, *args):
+    if os.environ['DISPLAY']:
+        msg = msg % tuple(args)
+        try:
+            execute(Config.notify + [msg], wait=False)
+        except:
+            warn(msg)
 
 def execute(cmd, sudo=False, pipe=False, wait=True):
     if pipe:
@@ -293,11 +302,15 @@ if __name__ == '__main__':
                 m.mount()
                 if opts.browse:
                     execute(Config.filemanager + [m.mountpoint], wait=False)
+                if opts.notify:
+                    notify("Mounted %s (%s)", m.info_dev(), m.info())
 
     def action_unmount():
         for m in get_mounts(opts.all):
             if m.is_mounted():
                 m.unmount()
+                if opts.notify:
+                    notify("Unmounted %s (%s)", m.info_dev(), m.info())
 
     def action_list():
         for m in get_mounts(not args):
@@ -311,10 +324,10 @@ if __name__ == '__main__':
                 print '<item label="No devices"/>'
             for m in mm:
                 if m.is_mounted():
-                    cmd = '--unmount'
+                    cmd = '--unmount --notify'
                     label = 'Unmount'
                 else:
-                    cmd = '--mount --browse'
+                    cmd = '--mount --browse --notify'
                     label = 'Mount'
                 dev = m.info_dev()
                 print '<item label="%s %s (%s)"><action name="Execute">\n' % \
@@ -333,6 +346,7 @@ if __name__ == '__main__':
     parser.add_option('--list', action='store_true')
     parser.add_option('--list-ob', action='store_true')
     parser.add_option('--browse', action='store_true')
+    parser.add_option('--notify', action='store_true')
     parser.add_option('--all', action='store_true')
     (opts, args) = parser.parse_args()
 
