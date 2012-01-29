@@ -242,8 +242,8 @@ class MMount(object):
             self._add_mount(Mount(fs, devs))
 
 if __name__ == '__main__':
-    def get_mounts():
-        if opts.all:
+    def get_mounts(getall):
+        if getall:
             return app.mounts
         mm = []
         for oarg in args:
@@ -256,17 +256,17 @@ if __name__ == '__main__':
         return mm
 
     def action_mount():
-        for m in get_mounts():
+        for m in get_mounts(opts.all):
             if not m.is_mounted():
                 m.mount()
 
     def action_unmount():
-        for m in get_mounts():
+        for m in get_mounts(opts.all):
             if m.is_mounted():
                 m.unmount()
 
     def action_list():
-        for m in app.mounts:
+        for m in get_mounts(not args):
             print repr(m)
 
     parser = optparse.OptionParser(usage="usage: %prog [options] device",
