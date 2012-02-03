@@ -285,16 +285,17 @@ class MMount(object):
 if __name__ == '__main__':
     def get_mounts(getall):
         if getall:
-            return app.mounts
-        mm = []
-        for oarg in args:
-            arg = Mount.devname(oarg)
-            m = app.mtab.get(arg)
-            if not m:
-                warn("Invalid device: %s", oarg)
-                sys.exit(1)
-            mm.append(m)
-        return mm
+            mm = app.mounts
+        else:
+            mm = []
+            for oarg in args:
+                arg = Mount.devname(oarg)
+                m = app.mtab.get(arg)
+                if not m:
+                    warn("Invalid device: %s", oarg)
+                    sys.exit(1)
+                mm.append(m)
+        return sorted(mm, key=lambda x: x.info_dev())
 
     def action_mount():
         for m in get_mounts(opts.all):
